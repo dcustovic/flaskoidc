@@ -74,7 +74,7 @@ class FlaskOIDC(Flask):
             token = request.args['access_token']
 
         if token:
-            validity = self.oidc.validate_token(self.jwkset, token, self.clock_skew_seconds)
+            validity = self.oidc.validate_token(token)
             # This check True is required to make sure the validity is checked
             if validity is True:
                 return
@@ -85,7 +85,7 @@ class FlaskOIDC(Flask):
                 if self.oidc.user_loggedin:
                     access_token = self.oidc.get_access_token()
                     assert access_token
-                    is_valid = self.oidc.validate_token(self.jwkset, access_token, self.clock_skew_seconds)
+                    is_valid = self.oidc.validate_token(access_token)
                     assert is_valid is True
                 return self.oidc.authenticate_or_redirect()
             except (AssertionError, AttributeError):
@@ -109,12 +109,6 @@ class FlaskOIDC(Flask):
         # Initiate OpenIDConnect using the SQLAlchemy backed session store
         _oidc = CustomOpenIDConnect(self, SessionCredentialStore())
         self.oidc = _oidc
-
-        self.clock_skew_seconds = current_app.config['OIDC_CLOCK_SKEW_SECONDS']
-
-        keys = httplib2.Http().request(self.client_secrets['jwks_uri'], method='GET')[1]
-
-        self.jwkset = _json_loads(keys.decode('utf-8'))['keys']
 
         # Register the before request function that will make sure each
         # request is authenticated before processing

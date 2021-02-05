@@ -31,8 +31,6 @@ class BaseConfig(object):
                                                     'client_secret_post')
     OIDC_ID_TOKEN_COOKIE_SECURE = os.environ.get('OIDC_ID_TOKEN_COOKIE_SECURE', False)
 
-    OIDC_CLOCK_SKEW_SECONDS = os.environ.get('OIDC_CLOCK_SKEW_SECONDS', 50)
-
     # Database and Sessions Settings
     SESSION_TYPE = os.environ.get('SESSION_TYPE', 'sqlalchemy')
     SQLALCHEMY_TRACK_MODIFICATIONS = os.environ.get('SQLALCHEMY_TRACK_MODIFICATIONS', False)
