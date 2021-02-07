@@ -5,51 +5,76 @@ from six.moves.urllib.parse import urlencode
 import httplib2
 from flask import redirect, Flask, request, g, current_app
 from flask.helpers import get_env, get_debug_flag
-from flask_oidc_ex import OpenIDConnect, _json_loads
+from flask_oidc_ex import OpenIDConnect, _json_loads, discover_OP_information, retrieve_jwks
 from flask_session import Session
 from flask_sqlalchemy import SQLAlchemy
 
 from flaskoidc.config import BaseConfig, OIDCProvider
 from flaskoidc.store import SessionCredentialStore
 
+from .validation import validate_token
+
 LOGGER = logging.getLogger(__name__)
 
 
 class CustomOpenIDConnect(OpenIDConnect):
     def _get_token_info(self, token):
-        # TODO: This should be fixed in the main flask-oidc repo instead.
-        # TODO: But since it is not being maintained anymore, we did it here.
-        # We hardcode to use client_secret_post, because that's what the Google
-        # oauth2client library defaults to
-        request = {'token': token}
-        headers = {'Content-type': 'application/x-www-form-urlencoded'}
+        validation_mode = current_app.config['OIDC_RESOURCE_SERVER_VALIDATION_MODE']
+        clock_skew_seconds = current_app.config['OIDC_CLOCK_SKEW']
 
-        hint = current_app.config['OIDC_TOKEN_TYPE_HINT']
-        if hint != 'none':
-            request['token_type_hint'] = hint
-            request[hint] = token
+        if validation_mode == 'online':
+            # We hardcode to use client_secret_post, because that's what the Google
+            # oauth2client library defaults to
+            request = {'token': token}
+            headers = {'Content-type': 'application/x-www-form-urlencoded'}
 
-        auth_method = current_app.config['OIDC_INTROSPECTION_AUTH_METHOD']
-        if auth_method == 'client_secret_basic':
-            basic_auth_string = '%s:%s' % (self.client_secrets['client_id'], self.client_secrets['client_secret'])
-            basic_auth_bytes = bytearray(basic_auth_string, 'utf-8')
-            headers['Authorization'] = 'Basic %s' % b64encode(basic_auth_bytes)
-        elif auth_method == 'bearer':
-            headers['Authorization'] = 'Bearer %s' % token
-        elif auth_method == 'client_secret_post':
-            request['client_id'] = self.client_secrets['client_id']
-            request['client_secret'] = self.client_secrets['client_secret']
+            hint = current_app.config['OIDC_TOKEN_TYPE_HINT']
+            if hint != 'none':
+                request['token_type_hint'] = hint
 
-        resp, content = httplib2.Http().request(self.client_secrets['token_introspection_uri'],
-                                                'POST', urlencode(request),
-                                                headers=headers)
-        # TODO: Cache this reply
-        token_info = _json_loads(content)
-        if not token_info.get("active"):
-            if token_info.get("expires_in") and int(token_info.get("expires_in")) > 1:
-                token_info["active"] = True
+            auth_method = current_app.config['OIDC_INTROSPECTION_AUTH_METHOD']
+            if (auth_method == 'client_secret_basic'):
+                basic_auth_string = '%s:%s' % (
+                    self.client_secrets['client_id'], self.client_secrets['client_secret'])
+                basic_auth_bytes = bytearray(basic_auth_string, 'utf-8')
+                headers['Authorization'] = 'Basic %s' % b64encode(
+                    basic_auth_bytes).decode('utf-8')
+            elif (auth_method == 'bearer'):
+                headers['Authorization'] = 'Bearer %s' % token
+            elif (auth_method == 'client_secret_post'):
+                request['client_id'] = self.client_secrets['client_id']
+                if self.client_secrets['client_secret'] is not None:
+                    request['client_secret'] = self.client_secrets['client_secret']
 
-        return token_info
+            resp, content = self.httpFactory().request(
+                self.client_secrets['token_introspection_uri'], 'POST',
+                urlencode(request), headers=headers)
+            # TODO: Cache this reply
+            return _json_loads(content)
+
+        elif validation_mode == 'offline':
+            issuer = current_app.config['OIDC_PROVIDER']
+            if issuer is None:
+                raise Exception('No \'op_uri\' defined in client_secrets or OIDC_PROVIDER set.')
+
+            disco = discover_OP_information(issuer, self.httpFactory)
+            jwks_uri = disco['jwks_uri']
+
+            if jwks_uri is None:
+                raise Exception('No \'jwks_uri\' available in the openid-configuration returned by the issuer.')
+
+            jwks = retrieve_jwks(jwks_uri, self.httpFactory)
+
+            if jwks is None:
+                raise Exception('The {0} endpoint returned no valid JWKs' % jwks_uri)
+
+            payload = validate_token(jwks, token, clock_skew_seconds)
+            payload['active'] = True  # Fake introspection response
+
+            return payload
+        else:
+            raise Exception(
+                'OIDC_RESOURCE_SERVER_VALIDATION_MODE must be set to either \'online\' or \'offline\'')
 
 
 class FlaskOIDC(Flask):
